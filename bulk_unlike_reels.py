@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
 """
-Instagram Bulk Reel Unliker
-===========================
+Instagram Bulk Reel Unliker v2
+==============================
 Automatically unlikes all your liked Reels on Instagram.
-
-How it works:
-1. Opens a browser window for you to log in manually
-2. Navigates to your liked Reels via Your Activity
-3. Selects and unlikes them in batches
-
-Requirements: Python 3.8+, playwright
-Install:  pip3 install playwright && python3 -m playwright install chromium
-Run:      python3 bulk_unlike_reels.py
+Uses JavaScript injection for reliable element detection.
 """
 
 import time
 import sys
+import os
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
@@ -27,45 +20,33 @@ except ImportError:
     sys.exit(1)
 
 
-# --- Settings ---
-DELAY_BETWEEN_ACTIONS = 2.0   # seconds between clicks (stay safe from rate limits)
-BATCH_PAUSE = 5.0             # seconds to pause between batches
-SCROLL_PAUSE = 3.0            # seconds to wait after scrolling for content to load
-MAX_RETRIES = 3               # retry attempts per action
+DELAY = 2.0
+BATCH_PAUSE = 5.0
 
 
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
 
+def screenshot(page, name):
+    """Save a debug screenshot."""
+    path = os.path.expanduser(f"~/Desktop/insta_debug_{name}.png")
+    try:
+        page.screenshot(path=path)
+        log(f"  Screenshot saved: {path}")
+    except Exception:
+        pass
+
+
 def wait_for_login(page):
     """Wait for the user to log in manually."""
     log("Waiting for you to log in...")
     log("(The script will continue automatically once you're logged in)\n")
-
     while True:
         try:
-            # Check if we're on a logged-in page
             url = page.url
             if "instagram.com" in url and "/accounts/login" not in url and "/challenge" not in url:
-                # Verify we're actually logged in by checking for profile icon
-                try:
-                    page.wait_for_selector('svg[aria-label="Settings"]', timeout=3000)
-                    return True
-                except PwTimeout:
-                    pass
-                try:
-                    page.wait_for_selector('a[href*="/direct/"]', timeout=3000)
-                    return True
-                except PwTimeout:
-                    pass
-                try:
-                    page.wait_for_selector('span[role="link"]', timeout=3000)
-                    return True
-                except PwTimeout:
-                    pass
-                # If URL changed from login, give benefit of the doubt after waiting
-                time.sleep(3)
+                time.sleep(5)
                 if "/accounts/login" not in page.url:
                     return True
         except Exception:
@@ -73,210 +54,182 @@ def wait_for_login(page):
         time.sleep(2)
 
 
-def unlike_via_your_activity(page):
-    """
-    Uses Instagram's 'Your Activity' > 'Likes' page to bulk-unlike reels.
-    This is the most reliable method as it uses Instagram's own UI.
-    """
-    total_unliked = 0
-
-    while True:
-        # Navigate to Your Activity > Likes
-        log("Navigating to Your Activity > Likes...")
-        page.goto("https://www.instagram.com/your_activity/interactions/likes/", wait_until="networkidle")
-        time.sleep(SCROLL_PAUSE)
-
-        # Check if there are any liked items
-        # Look for the "Select" button which appears when there are liked items
-        select_btn = None
+def dismiss_popups(page):
+    """Dismiss any popups like 'Turn on notifications', 'Save info', etc."""
+    for text in ["Not Now", "Not now", "Cancel", "Decline"]:
         try:
-            # Try to find "Select" button
-            select_btn = page.locator('text="Select"').first
-            select_btn.wait_for(timeout=8000)
-        except PwTimeout:
-            # Try alternative selectors
-            try:
-                select_btn = page.locator('button:has-text("Select")').first
-                select_btn.wait_for(timeout=5000)
-            except PwTimeout:
-                log("No 'Select' button found - you may have no more liked content!")
-                break
-
-        # Click "Select" to enter selection mode
-        log("Entering selection mode...")
-        select_btn.click()
-        time.sleep(DELAY_BETWEEN_ACTIONS)
-
-        # Select items (Instagram shows them as a grid)
-        # Find all selectable items
-        selected_count = 0
-        items = page.locator('div[role="button"][tabindex="0"]').all()
-
-        # Try clicking on individual reel thumbnails to select them
-        # Instagram's Your Activity page shows items as clickable thumbnails
-        clickable_items = page.locator('div[role="checkbox"], div[role="button"] img, button[aria-label*="select"], div[class*="select"]').all()
-
-        if not clickable_items:
-            # Try a broader selector for grid items
-            clickable_items = page.locator('div._aagu, div._aagv, div._aagw').all()
-
-        if not clickable_items:
-            # Fallback: try to find any image containers in the grid
-            clickable_items = page.locator('div[style*="padding"] > div > div > div').all()
-
-        # Select up to 50 items at a time (Instagram's limit)
-        batch_size = min(50, len(clickable_items))
-
-        if batch_size == 0:
-            log("No selectable items found on this page.")
-            # Try the alternative approach
-            break
-
-        log(f"Found {len(clickable_items)} items, selecting up to {batch_size}...")
-
-        for i in range(batch_size):
-            try:
-                clickable_items[i].click()
-                selected_count += 1
-                time.sleep(0.3)
-            except Exception:
-                continue
-
-        if selected_count == 0:
-            log("Could not select any items.")
-            break
-
-        log(f"Selected {selected_count} items")
-        time.sleep(DELAY_BETWEEN_ACTIONS)
-
-        # Click "Unlike" button
-        unlike_btn = None
-        for text in ["Unlike", "unlike"]:
-            try:
-                unlike_btn = page.locator(f'button:has-text("{text}")').first
-                unlike_btn.wait_for(timeout=5000)
-                break
-            except PwTimeout:
-                continue
-
-        if not unlike_btn:
-            log("Could not find 'Unlike' button")
-            break
-
-        unlike_btn.click()
-        time.sleep(DELAY_BETWEEN_ACTIONS)
-
-        # Confirm if there's a confirmation dialog
-        try:
-            confirm_btn = page.locator('button:has-text("Unlike")').first
-            confirm_btn.wait_for(timeout=3000)
-            confirm_btn.click()
-            time.sleep(DELAY_BETWEEN_ACTIONS)
-        except PwTimeout:
+            btn = page.locator(f'button:has-text("{text}")').first
+            if btn.is_visible(timeout=2000):
+                btn.click()
+                time.sleep(1)
+        except Exception:
             pass
 
-        total_unliked += selected_count
-        log(f"Unliked batch of {selected_count} items (total so far: {total_unliked})")
 
-        time.sleep(BATCH_PAUSE)
-
-    return total_unliked
-
-
-def unlike_via_scrolling(page):
+def unlike_batch_via_activity(page):
     """
-    Alternative method: scroll through liked reels and unlike them individually.
-    Used as fallback if the Your Activity method doesn't work well.
+    Navigate to Your Activity > Likes, select items, and unlike them.
+    Returns the number of items unliked in this batch, or -1 if no items found.
     """
-    log("Trying alternative method: scrolling through liked reels...")
+    # Navigate to the likes page
+    log("Navigating to Your Activity > Likes...")
+    page.goto("https://www.instagram.com/your_activity/interactions/likes/",
+              wait_until="domcontentloaded")
+    time.sleep(4)
+    dismiss_popups(page)
+    time.sleep(2)
 
-    # Try the Reels-specific liked page
-    page.goto("https://www.instagram.com/your_activity/interactions/likes/", wait_until="networkidle")
-    time.sleep(SCROLL_PAUSE)
+    # Take a debug screenshot
+    screenshot(page, "likes_page")
 
-    # Try to filter to just Reels if possible
-    try:
-        reels_filter = page.locator('text="Reels"').first
-        reels_filter.wait_for(timeout=5000)
-        reels_filter.click()
-        time.sleep(DELAY_BETWEEN_ACTIONS)
-    except PwTimeout:
-        log("No Reels filter available, processing all liked content...")
+    # Log the page content for debugging
+    page_text = page.evaluate("() => document.body.innerText")
+    log(f"  Page contains {len(page_text)} chars of text")
 
-    # Now try to find Sort & Filter to sort by oldest first
-    try:
-        sort_btn = page.locator('text="Sort & Filter"').first
-        sort_btn.wait_for(timeout=3000)
-        sort_btn.click()
-        time.sleep(1)
-    except PwTimeout:
-        pass
+    # Look for "Select" button using JavaScript for reliability
+    select_found = page.evaluate("""() => {
+        // Find all elements that contain "Select" text
+        const allElements = document.querySelectorAll('*');
+        for (const el of allElements) {
+            if (el.childNodes.length === 1 &&
+                el.childNodes[0].nodeType === 3 &&
+                el.textContent.trim() === 'Select') {
+                el.click();
+                return true;
+            }
+        }
+        // Try finding a link/button with Select text
+        const links = document.querySelectorAll('a, button, div[role="button"], span[role="button"]');
+        for (const el of links) {
+            if (el.textContent.trim() === 'Select') {
+                el.click();
+                return true;
+            }
+        }
+        return false;
+    }""")
 
-    total_unliked = 0
-    no_items_count = 0
+    if not select_found:
+        log("Could not find 'Select' button on the page.")
+        screenshot(page, "no_select")
 
-    while no_items_count < 3:
-        # Look for the select/manage interface
-        try:
-            select_btn = page.locator('text="Select"').first
-            select_btn.wait_for(timeout=5000)
-            select_btn.click()
-            time.sleep(DELAY_BETWEEN_ACTIONS)
-        except PwTimeout:
-            no_items_count += 1
-            log(f"Cannot find Select button (attempt {no_items_count}/3)")
-            page.reload()
-            time.sleep(SCROLL_PAUSE)
-            continue
+        # Check if the page has any content at all
+        has_content = page.evaluate("""() => {
+            const imgs = document.querySelectorAll('img');
+            return imgs.length;
+        }""")
+        log(f"  Found {has_content} images on page")
 
-        # Try to select all visible items
-        selected = 0
-        # Click on grid thumbnails
-        thumbs = page.locator('div[role="button"]').all()
-        for thumb in thumbs[:50]:
-            try:
-                box = thumb.bounding_box()
-                if box and box["y"] > 100:  # Skip header buttons
-                    thumb.click()
-                    selected += 1
-                    time.sleep(0.2)
-            except Exception:
-                continue
+        if has_content < 5:
+            log("  Page seems empty - you may have no more liked content!")
+            return -1
+        else:
+            log("  Page has content but Select button not found")
+            return -1
 
-        if selected == 0:
-            no_items_count += 1
-            continue
+    log("Clicked 'Select' - entering selection mode...")
+    time.sleep(DELAY)
+    screenshot(page, "selection_mode")
 
-        # Unlike
-        try:
-            unlike_btn = page.locator('button:has-text("Unlike")').first
-            unlike_btn.wait_for(timeout=5000)
-            unlike_btn.click()
-            time.sleep(DELAY_BETWEEN_ACTIONS)
+    # Now select items by clicking on the grid thumbnails
+    # Instagram shows checkboxes or clickable overlays on images
+    selected = page.evaluate("""() => {
+        let count = 0;
+        const maxSelect = 50;
 
-            # Confirm
-            try:
-                confirm = page.locator('button:has-text("Unlike")').first
-                confirm.wait_for(timeout=3000)
-                confirm.click()
-            except PwTimeout:
-                pass
+        // Method 1: Look for checkboxes
+        const checkboxes = document.querySelectorAll('input[type="checkbox"], div[role="checkbox"]');
+        for (const cb of checkboxes) {
+            if (count >= maxSelect) break;
+            cb.click();
+            count++;
+        }
+        if (count > 0) return count;
 
-            total_unliked += selected
-            log(f"Unliked {selected} items (total: {total_unliked})")
-            no_items_count = 0
-        except PwTimeout:
-            log("Unlike button not found")
-            no_items_count += 1
+        // Method 2: Look for grid items with images (the photo thumbnails)
+        const gridImages = document.querySelectorAll('div[style*="padding-bottom"] img, div._aagv img, article img');
+        for (const img of gridImages) {
+            if (count >= maxSelect) break;
+            // Click the parent container
+            let target = img.parentElement;
+            for (let i = 0; i < 3; i++) {
+                if (target && target.parentElement) target = target.parentElement;
+            }
+            if (target) {
+                target.click();
+                count++;
+            }
+        }
+        if (count > 0) return count;
 
-        time.sleep(BATCH_PAUSE)
+        // Method 3: Click on any div that looks like a grid cell
+        const cells = document.querySelectorAll('div[role="button"]');
+        const mainContent = document.querySelector('main') || document.body;
+        for (const cell of cells) {
+            if (count >= maxSelect) break;
+            const rect = cell.getBoundingClientRect();
+            // Only click cells that are in the main content area (not header/nav)
+            if (rect.top > 200 && rect.width > 50 && rect.height > 50 && rect.width < 400) {
+                cell.click();
+                count++;
+            }
+        }
+        return count;
+    }""")
 
-    return total_unliked
+    log(f"Selected {selected} items")
+
+    if selected == 0:
+        log("Could not select any items.")
+        screenshot(page, "no_items_selected")
+        return 0
+
+    time.sleep(DELAY)
+    screenshot(page, "items_selected")
+
+    # Look for "Unlike" button
+    unlike_clicked = page.evaluate("""() => {
+        const allElements = document.querySelectorAll('button, div[role="button"], a');
+        for (const el of allElements) {
+            const text = el.textContent.trim();
+            if (text === 'Unlike' || text === 'unlike') {
+                el.click();
+                return true;
+            }
+        }
+        return false;
+    }""")
+
+    if not unlike_clicked:
+        log("Could not find 'Unlike' button")
+        screenshot(page, "no_unlike_btn")
+        return 0
+
+    log("Clicked 'Unlike'...")
+    time.sleep(DELAY)
+
+    # Handle confirmation dialog if it appears
+    page.evaluate("""() => {
+        setTimeout(() => {
+            const buttons = document.querySelectorAll('button');
+            for (const btn of buttons) {
+                if (btn.textContent.trim() === 'Unlike') {
+                    btn.click();
+                    break;
+                }
+            }
+        }, 1000);
+    }""")
+    time.sleep(3)
+
+    log(f"Unliked {selected} items!")
+    screenshot(page, "after_unlike")
+    return selected
 
 
 def main():
     print("=" * 55)
-    print("   Instagram Bulk Reel Unliker")
+    print("   Instagram Bulk Reel Unliker v2")
     print("=" * 55)
     print()
     print("This tool will open a browser window.")
@@ -287,11 +240,13 @@ def main():
     print("IMPORTANT: Keep the browser window visible.")
     print("           Do not close it until the script finishes.")
     print()
+    print("Debug screenshots will be saved to your Desktop")
+    print("so we can troubleshoot if anything goes wrong.")
+    print()
     input("Press ENTER to start...")
     print()
 
     with sync_playwright() as p:
-        # Launch a visible browser (not headless) so user can log in
         browser = p.chromium.launch(
             headless=False,
             args=[
@@ -301,49 +256,69 @@ def main():
         )
         context = browser.new_context(
             viewport={"width": 1280, "height": 900},
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         )
         page = context.new_page()
 
-        # Go to Instagram login
+        # Mask automation signals
+        page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        """)
+
         log("Opening Instagram...")
-        page.goto("https://www.instagram.com/accounts/login/", wait_until="networkidle")
-        time.sleep(2)
-
-        # Handle cookie consent if it appears
-        try:
-            cookie_btn = page.locator('button:has-text("Allow"), button:has-text("Accept")').first
-            cookie_btn.wait_for(timeout=3000)
-            cookie_btn.click()
-            time.sleep(1)
-        except PwTimeout:
-            pass
-
-        # Wait for user to log in
-        wait_for_login(page)
-        log("Login detected! Starting the unlike process...\n")
+        page.goto("https://www.instagram.com/accounts/login/", wait_until="domcontentloaded")
         time.sleep(3)
 
-        # Method 1: Use Your Activity page (most reliable)
-        total = unlike_via_your_activity(page)
+        # Handle cookie consent
+        try:
+            for text in ["Allow essential and optional cookies", "Allow all cookies", "Accept", "Allow"]:
+                btn = page.locator(f'button:has-text("{text}")').first
+                if btn.is_visible(timeout=2000):
+                    btn.click()
+                    time.sleep(1)
+                    break
+        except Exception:
+            pass
 
-        if total == 0:
-            # Method 2: Try scrolling approach as fallback
-            total = unlike_via_scrolling(page)
+        wait_for_login(page)
+        log("Login detected!")
+        time.sleep(3)
+        dismiss_popups(page)
+        time.sleep(2)
+
+        log("Starting the unlike process...\n")
+
+        total_unliked = 0
+        consecutive_failures = 0
+
+        while consecutive_failures < 3:
+            result = unlike_batch_via_activity(page)
+
+            if result == -1:
+                # No content found at all
+                break
+            elif result == 0:
+                consecutive_failures += 1
+                log(f"Batch failed (attempt {consecutive_failures}/3)")
+                time.sleep(BATCH_PAUSE)
+            else:
+                total_unliked += result
+                consecutive_failures = 0
+                log(f"Total unliked so far: {total_unliked}\n")
+                time.sleep(BATCH_PAUSE)
 
         print()
         print("=" * 55)
-        if total > 0:
-            log(f"DONE! Unliked {total} items in total.")
+        if total_unliked > 0:
+            log(f"DONE! Unliked {total_unliked} items in total.")
+            log("If you have more liked reels, run the script again.")
         else:
             log("Could not unlike items automatically.")
-            log("This might mean:")
-            log("  - You have no liked Reels")
-            log("  - Instagram changed their UI layout")
             log("")
-            log("TIP: You can also do it manually:")
-            log("  Settings > Your Activity > Interactions > Likes")
-            log("  Then use Select > pick items > Unlike")
+            log("Debug screenshots have been saved to your Desktop.")
+            log("Please send them to me and I'll figure out what's wrong!")
+            log("")
+            log("Screenshots are named: insta_debug_*.png")
         print("=" * 55)
         print()
 
