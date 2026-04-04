@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Instagram Bulk Reel Unliker v3
-Uses JavaScript injection for reliable automation.
+Instagram Bulk Reel Unliker v4
+Waits for manual confirmation after login.
 """
 
 import time
 import sys
+import os
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
@@ -22,13 +23,10 @@ def log(msg):
 
 def main():
     print("=" * 50)
-    print("  Instagram Bulk Reel Unliker v3")
+    print("  Instagram Bulk Reel Unliker v4")
     print("=" * 50)
     print()
-    print("A browser will open. Log in to Instagram.")
-    print("The script will start automatically after login.")
-    print()
-    input("Press ENTER to begin...")
+    input("Press ENTER to open the browser...")
     print()
 
     with sync_playwright() as p:
@@ -43,7 +41,7 @@ def main():
         page = context.new_page()
         page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => false});")
 
-        log("Opening Instagram login page...")
+        log("Opening Instagram...")
         page.goto("https://www.instagram.com/accounts/login/", wait_until="domcontentloaded")
         time.sleep(3)
 
@@ -58,52 +56,47 @@ def main():
         except Exception:
             pass
 
-        log("Waiting for you to log in...")
-        log("(Log in normally in the browser window)\n")
+        print()
+        print(">>> LOG IN to Instagram in the browser window.")
+        print(">>> Complete ALL steps (password, email verify, etc.)")
+        print(">>> When you see your Instagram feed, come back here.")
+        print()
+        input(">>> Press ENTER here AFTER you are fully logged in...")
+        print()
 
-        # Wait for login
-        while True:
-            try:
-                url = page.url
-                if "instagram.com" in url and "/accounts/login" not in url and "/challenge" not in url:
-                    time.sleep(5)
-                    if "/accounts/login" not in page.url:
-                        break
-            except Exception:
-                pass
-            time.sleep(2)
+        log("Great! Now navigating to your liked content...")
+        time.sleep(2)
 
-        log("Login detected!")
-        time.sleep(3)
-
-        # Dismiss "Turn on notifications" or "Save info" popups
+        # Dismiss popups
         for _ in range(3):
             try:
                 page.evaluate("""() => {
                     const btns = document.querySelectorAll('button');
                     for (const b of btns) {
                         const t = b.textContent.trim();
-                        if (t === 'Not Now' || t === 'Not now' || t === 'Cancel' || t === 'Decline') {
-                            b.click(); return true;
-                        }
+                        if (t === 'Not Now' || t === 'Not now') { b.click(); return true; }
                     }
                     return false;
                 }""")
-                time.sleep(2)
+                time.sleep(1)
             except Exception:
                 break
 
         total_unliked = 0
         consecutive_fails = 0
+        round_num = 0
 
         while consecutive_fails < 3:
+            round_num += 1
+            log(f"--- Round {round_num} ---")
+
             # Navigate to likes page
             log("Going to Your Activity > Likes...")
             page.goto("https://www.instagram.com/your_activity/interactions/likes/",
                        wait_until="domcontentloaded")
-            time.sleep(5)
+            time.sleep(6)
 
-            # Dismiss any popups again
+            # Dismiss popups
             try:
                 page.evaluate("""() => {
                     const btns = document.querySelectorAll('button');
@@ -115,163 +108,170 @@ def main():
             except Exception:
                 pass
 
-            # Check page content
+            # Screenshot for debugging
+            debug_path = os.path.expanduser(f"~/Desktop/insta_debug_round{round_num}.png")
+            try:
+                page.screenshot(path=debug_path)
+                log(f"  Screenshot saved: {debug_path}")
+            except Exception:
+                pass
+
+            # Check if Select exists
             page_text = page.evaluate("() => document.body ? document.body.innerText : ''")
-            log(f"  Page loaded ({len(page_text)} chars)")
+            log(f"  Page text length: {len(page_text)}")
 
             if "Select" not in page_text:
-                log("  'Select' not found on page.")
-                log(f"  Page text preview: {page_text[:200]}")
+                log("  No 'Select' found on page!")
+                log(f"  First 300 chars: {page_text[:300]}")
                 consecutive_fails += 1
                 time.sleep(3)
                 continue
 
             # Click Select
+            log("  Clicking 'Select'...")
             clicked = page.evaluate("""() => {
+                // Try exact match on leaf text nodes
                 const all = document.querySelectorAll('a, span, div, button, p');
                 for (const el of all) {
                     if (el.childNodes.length === 1 &&
                         el.childNodes[0].nodeType === 3 &&
                         el.textContent.trim() === 'Select') {
                         el.click();
-                        return 'clicked: ' + el.tagName;
+                        return 'clicked ' + el.tagName + ' (exact)';
                     }
                 }
-                // Broader search
+                // Broader: any visible element with Select text
                 for (const el of all) {
-                    if (el.textContent.trim() === 'Select' && el.offsetParent !== null) {
+                    if (el.textContent.trim() === 'Select' &&
+                        el.offsetParent !== null &&
+                        el.getBoundingClientRect().width > 0) {
                         el.click();
-                        return 'clicked-broad: ' + el.tagName;
+                        return 'clicked ' + el.tagName + ' (broad)';
                     }
                 }
-                return 'not-found';
+                return 'not found';
             }""")
-            log(f"  Select button: {clicked}")
+            log(f"  Result: {clicked}")
 
-            if 'not-found' in clicked:
+            if 'not found' in clicked:
                 consecutive_fails += 1
-                time.sleep(3)
                 continue
 
             time.sleep(3)
 
-            # Select grid items by clicking on them
+            # Take screenshot after entering selection mode
+            try:
+                page.screenshot(path=os.path.expanduser(f"~/Desktop/insta_debug_select{round_num}.png"))
+            except Exception:
+                pass
+
+            # Select items by clicking thumbnails
+            log("  Selecting items...")
             selected = page.evaluate("""() => {
                 let count = 0;
-                const maxSelect = 50;
-                const clicked = new Set();
+                const maxSel = 50;
+                const seen = new Set();
 
-                // Find all images in the grid area
-                const allImgs = document.querySelectorAll('img');
-                for (const img of allImgs) {
-                    if (count >= maxSelect) break;
+                // Get all images on page
+                const imgs = document.querySelectorAll('img');
+                for (const img of imgs) {
+                    if (count >= maxSel) break;
 
                     const rect = img.getBoundingClientRect();
-                    // Grid images are typically square-ish and in the main content area
-                    if (rect.width > 80 && rect.height > 80 && rect.top > 150 && rect.top < 2000) {
-                        // Walk up to find clickable parent
-                        let target = img;
-                        for (let i = 0; i < 6; i++) {
-                            if (target.parentElement) target = target.parentElement;
-                        }
+                    // Grid thumbnails: reasonably sized, below header
+                    if (rect.width > 80 && rect.height > 80 && rect.top > 140 && rect.left > 300) {
+                        const id = Math.round(rect.left) + '_' + Math.round(rect.top);
+                        if (seen.has(id)) continue;
+                        seen.add(id);
 
-                        const key = target.innerHTML.substring(0, 50);
-                        if (!clicked.has(key)) {
-                            // Try clicking the image itself first
-                            img.click();
-                            clicked.add(key);
-                            count++;
-                        }
+                        // Click the image itself
+                        img.click();
+                        count++;
                     }
                 }
-
-                if (count === 0) {
-                    // Try clicking div containers
-                    const divs = document.querySelectorAll('div[role="button"], div[tabindex="0"]');
-                    for (const div of divs) {
-                        if (count >= maxSelect) break;
-                        const rect = div.getBoundingClientRect();
-                        if (rect.width > 80 && rect.height > 80 && rect.top > 150) {
-                            div.click();
-                            count++;
-                        }
-                    }
-                }
-
                 return count;
             }""")
-
-            log(f"  Clicked on {selected} items")
+            log(f"  Clicked {selected} thumbnails")
 
             if selected == 0:
-                log("  Could not select any items.")
-                consecutive_fails += 1
-                time.sleep(3)
-                continue
-
-            time.sleep(2)
-
-            # Check if items are actually selected (look for visual indicator or Unlike button)
-            has_unlike = page.evaluate("""() => {
-                const btns = document.querySelectorAll('button, div[role="button"]');
-                for (const b of btns) {
-                    if (b.textContent.trim() === 'Unlike') return true;
-                }
-                return false;
-            }""")
-
-            if not has_unlike:
-                log("  Unlike button not visible yet. Trying to click thumbnails directly...")
-                # Try clicking on the actual thumbnail containers more precisely
-                selected2 = page.evaluate("""() => {
+                # Try alternative: click parent divs
+                selected = page.evaluate("""() => {
                     let count = 0;
-                    // Try all possible clickable areas
-                    const containers = document.querySelectorAll('div > div > img');
-                    for (const img of containers) {
+                    const divs = document.querySelectorAll('div[role="button"]');
+                    for (const d of divs) {
                         if (count >= 50) break;
-                        const rect = img.getBoundingClientRect();
-                        if (rect.top > 150 && rect.width > 50) {
-                            img.parentElement.click();
+                        const r = d.getBoundingClientRect();
+                        if (r.width > 80 && r.height > 80 && r.top > 140 && r.left > 300) {
+                            d.click();
                             count++;
                         }
                     }
                     return count;
                 }""")
-                log(f"  Second attempt: clicked {selected2} items")
-                time.sleep(2)
+                log(f"  Alt method: clicked {selected} divs")
 
-                has_unlike = page.evaluate("""() => {
-                    const btns = document.querySelectorAll('button, div[role="button"]');
-                    for (const b of btns) {
-                        if (b.textContent.trim() === 'Unlike') return true;
-                    }
-                    return false;
-                }""")
-
-            if not has_unlike:
-                log("  Still no Unlike button. Taking screenshot for debugging...")
+            if selected == 0:
+                log("  Could not select any items!")
                 try:
-                    import os
-                    path = os.path.expanduser("~/Desktop/insta_debug.png")
-                    page.screenshot(path=path)
-                    log(f"  Screenshot saved to: {path}")
+                    page.screenshot(path=os.path.expanduser(f"~/Desktop/insta_debug_noselect{round_num}.png"))
                 except Exception:
                     pass
                 consecutive_fails += 1
-                time.sleep(3)
                 continue
 
+            time.sleep(2)
+
+            # Screenshot after selection
+            try:
+                page.screenshot(path=os.path.expanduser(f"~/Desktop/insta_debug_selected{round_num}.png"))
+            except Exception:
+                pass
+
+            # Check for Unlike button
+            unlike_text = page.evaluate("""() => {
+                const all = document.querySelectorAll('button, div[role="button"], a, span');
+                const found = [];
+                for (const el of all) {
+                    const t = el.textContent.trim();
+                    if (t.toLowerCase().includes('unlike') || t.toLowerCase().includes('deselect') || t.toLowerCase().includes('remove')) {
+                        found.push(el.tagName + ': ' + t.substring(0, 30));
+                    }
+                }
+                return found.join(' | ') || 'none found';
+            }""")
+            log(f"  Unlike-related buttons: {unlike_text}")
+
             # Click Unlike
-            page.evaluate("""() => {
+            unlike_result = page.evaluate("""() => {
                 const btns = document.querySelectorAll('button, div[role="button"]');
                 for (const b of btns) {
-                    if (b.textContent.trim() === 'Unlike') { b.click(); return; }
+                    if (b.textContent.trim() === 'Unlike') {
+                        b.click();
+                        return 'clicked';
+                    }
                 }
+                // Try case-insensitive
+                for (const b of btns) {
+                    if (b.textContent.trim().toLowerCase() === 'unlike') {
+                        b.click();
+                        return 'clicked (case-insensitive)';
+                    }
+                }
+                return 'not found';
             }""")
-            log("  Clicked Unlike...")
+            log(f"  Unlike button: {unlike_result}")
+
+            if 'not found' in unlike_result:
+                try:
+                    page.screenshot(path=os.path.expanduser(f"~/Desktop/insta_debug_nounlike{round_num}.png"))
+                except Exception:
+                    pass
+                consecutive_fails += 1
+                continue
+
             time.sleep(3)
 
-            # Confirm dialog if present
+            # Confirm dialog
             page.evaluate("""() => {
                 const btns = document.querySelectorAll('button');
                 for (const b of btns) {
@@ -282,18 +282,20 @@ def main():
 
             total_unliked += selected
             consecutive_fails = 0
-            log(f"  Batch done! Total unliked so far: {total_unliked}\n")
+            log(f"  Unliked! Total so far: {total_unliked}\n")
             time.sleep(5)
 
         print()
         print("=" * 50)
         if total_unliked > 0:
-            log(f"DONE! Unliked {total_unliked} items.")
+            log(f"DONE! Unliked {total_unliked} items total.")
             log("Run the script again if you have more!")
         else:
             log("Could not unlike items automatically.")
-            log("Check Desktop for insta_debug.png screenshot")
-            log("and send it to me so I can see what's happening.")
+            log("")
+            log("Please send me the screenshots from your Desktop:")
+            log("  (files named insta_debug_*.png)")
+            log("I'll use them to fix the script for your account.")
         print("=" * 50)
         print()
 
