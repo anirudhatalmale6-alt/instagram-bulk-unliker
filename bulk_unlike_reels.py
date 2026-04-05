@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Instagram Bulk Reel Unliker v4
-Waits for manual confirmation after login.
+Instagram Bulk Reel Unliker v5
+Uses Instagram's internal API for reliable unliking.
 """
 
 import time
 import sys
-import os
+import json
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
@@ -23,8 +23,11 @@ def log(msg):
 
 def main():
     print("=" * 50)
-    print("  Instagram Bulk Reel Unliker v4")
+    print("  Instagram Bulk Reel Unliker v5")
     print("=" * 50)
+    print()
+    print("This version uses Instagram's internal API")
+    print("for reliable unliking that actually works.")
     print()
     input("Press ENTER to open the browser...")
     print()
@@ -57,14 +60,16 @@ def main():
             pass
 
         print()
-        print(">>> LOG IN to Instagram in the browser window.")
-        print(">>> Complete ALL steps (password, email verify, etc.)")
-        print(">>> When you see your Instagram feed, come back here.")
+        print("=" * 50)
+        print("  LOG IN to Instagram in the browser window.")
+        print("  Complete ALL steps (password, verification, etc)")
+        print("  When you see your Instagram feed, come back here.")
+        print("=" * 50)
         print()
-        input(">>> Press ENTER here AFTER you are fully logged in...")
+        input("Press ENTER here AFTER you are fully logged in...")
         print()
 
-        log("Great! Now navigating to your liked content...")
+        log("Checking login status...")
         time.sleep(2)
 
         # Dismiss popups
@@ -74,228 +79,193 @@ def main():
                     const btns = document.querySelectorAll('button');
                     for (const b of btns) {
                         const t = b.textContent.trim();
-                        if (t === 'Not Now' || t === 'Not now') { b.click(); return true; }
+                        if (t === 'Not Now' || t === 'Not now' || t === 'Save Info') {
+                            b.click(); return true;
+                        }
                     }
                     return false;
                 }""")
-                time.sleep(1)
+                time.sleep(2)
             except Exception:
                 break
 
+        # Get CSRF token and cookies for API calls
+        csrf_token = page.evaluate("""() => {
+            // Try to get from cookie
+            const cookies = document.cookie.split(';');
+            for (const c of cookies) {
+                const [name, val] = c.trim().split('=');
+                if (name === 'csrftoken') return val;
+            }
+            // Try meta tag
+            const meta = document.querySelector('meta[name="csrf-token"]');
+            if (meta) return meta.getAttribute('content');
+            return null;
+        }""")
+
+        if not csrf_token:
+            log("Could not get CSRF token. Make sure you're logged in!")
+            input("Press ENTER to close...")
+            browser.close()
+            return
+
+        log(f"Got session token: {csrf_token[:10]}...")
+
+        # Test that we're logged in by fetching user info
+        user_check = page.evaluate("""() => {
+            return document.cookie.includes('ds_user_id');
+        }""")
+
+        if not user_check:
+            log("Not properly logged in. Please try again.")
+            input("Press ENTER to close...")
+            browser.close()
+            return
+
+        log("Login confirmed! Starting to fetch liked posts...")
+        print()
+
         total_unliked = 0
-        consecutive_fails = 0
-        round_num = 0
+        max_id = ""
+        empty_rounds = 0
 
-        while consecutive_fails < 3:
-            round_num += 1
-            log(f"--- Round {round_num} ---")
+        while empty_rounds < 3:
+            # Fetch liked posts using Instagram's internal API
+            url_suffix = f"&max_id={max_id}" if max_id else ""
+            liked_data = page.evaluate(f"""async () => {{
+                try {{
+                    const resp = await fetch('https://www.instagram.com/api/v1/feed/liked/?count=50{url_suffix}', {{
+                        method: 'GET',
+                        headers: {{
+                            'X-CSRFToken': '{csrf_token}',
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'X-IG-App-ID': '936619743392459',
+                        }},
+                        credentials: 'include',
+                    }});
+                    if (!resp.ok) return {{ error: resp.status + ' ' + resp.statusText }};
+                    const data = await resp.json();
+                    return data;
+                }} catch(e) {{
+                    return {{ error: e.message }};
+                }}
+            }}""")
 
-            # Navigate to likes page
-            log("Going to Your Activity > Likes...")
-            page.goto("https://www.instagram.com/your_activity/interactions/likes/",
-                       wait_until="domcontentloaded")
-            time.sleep(6)
+            if not liked_data or "error" in liked_data:
+                error_msg = liked_data.get("error", "unknown") if liked_data else "no response"
+                log(f"Error fetching liked posts: {error_msg}")
 
-            # Dismiss popups
-            try:
-                page.evaluate("""() => {
-                    const btns = document.querySelectorAll('button');
-                    for (const b of btns) {
-                        if (b.textContent.trim() === 'Not Now') { b.click(); return; }
-                    }
-                }""")
-                time.sleep(1)
-            except Exception:
-                pass
+                if "429" in str(error_msg) or "rate" in str(error_msg).lower():
+                    log("Rate limited. Waiting 60 seconds...")
+                    time.sleep(60)
+                    continue
 
-            # Screenshot for debugging
-            debug_path = os.path.expanduser(f"~/Desktop/insta_debug_round{round_num}.png")
-            try:
-                page.screenshot(path=debug_path)
-                log(f"  Screenshot saved: {debug_path}")
-            except Exception:
-                pass
-
-            # Check if Select exists
-            page_text = page.evaluate("() => document.body ? document.body.innerText : ''")
-            log(f"  Page text length: {len(page_text)}")
-
-            if "Select" not in page_text:
-                log("  No 'Select' found on page!")
-                log(f"  First 300 chars: {page_text[:300]}")
-                consecutive_fails += 1
-                time.sleep(3)
+                empty_rounds += 1
+                time.sleep(5)
                 continue
 
-            # Click Select
-            log("  Clicking 'Select'...")
-            clicked = page.evaluate("""() => {
-                // Try exact match on leaf text nodes
-                const all = document.querySelectorAll('a, span, div, button, p');
-                for (const el of all) {
-                    if (el.childNodes.length === 1 &&
-                        el.childNodes[0].nodeType === 3 &&
-                        el.textContent.trim() === 'Select') {
-                        el.click();
-                        return 'clicked ' + el.tagName + ' (exact)';
-                    }
-                }
-                // Broader: any visible element with Select text
-                for (const el of all) {
-                    if (el.textContent.trim() === 'Select' &&
-                        el.offsetParent !== null &&
-                        el.getBoundingClientRect().width > 0) {
-                        el.click();
-                        return 'clicked ' + el.tagName + ' (broad)';
-                    }
-                }
-                return 'not found';
-            }""")
-            log(f"  Result: {clicked}")
+            items = liked_data.get("items", [])
+            next_max_id = liked_data.get("next_max_id", "")
+            more_available = liked_data.get("more_available", False)
 
-            if 'not found' in clicked:
-                consecutive_fails += 1
-                continue
+            if not items:
+                log("No more liked posts found!")
+                break
 
-            time.sleep(3)
+            log(f"Found {len(items)} liked posts in this batch")
 
-            # Take screenshot after entering selection mode
-            try:
-                page.screenshot(path=os.path.expanduser(f"~/Desktop/insta_debug_select{round_num}.png"))
-            except Exception:
-                pass
+            # Unlike each post
+            for i, item in enumerate(items):
+                media_id = item.get("id") or item.get("pk") or item.get("media_id")
+                if not media_id:
+                    continue
 
-            # Select items by clicking thumbnails
-            log("  Selecting items...")
-            selected = page.evaluate("""() => {
-                let count = 0;
-                const maxSel = 50;
-                const seen = new Set();
+                # Convert pk to proper media_id format if needed
+                media_pk = str(item.get("pk", media_id))
 
-                // Get all images on page
-                const imgs = document.querySelectorAll('img');
-                for (const img of imgs) {
-                    if (count >= maxSel) break;
+                unlike_result = page.evaluate(f"""async () => {{
+                    try {{
+                        const resp = await fetch('https://www.instagram.com/api/v1/web/likes/' + '{media_pk}' + '/unlike/', {{
+                            method: 'POST',
+                            headers: {{
+                                'X-CSRFToken': '{csrf_token}',
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'X-IG-App-ID': '936619743392459',
+                                'Content-Type': 'application/x-www-form-urlencoded',
+                            }},
+                            credentials: 'include',
+                        }});
+                        if (!resp.ok) return {{ error: resp.status }};
+                        return {{ success: true }};
+                    }} catch(e) {{
+                        return {{ error: e.message }};
+                    }}
+                }}""")
 
-                    const rect = img.getBoundingClientRect();
-                    // Grid thumbnails: reasonably sized, below header
-                    if (rect.width > 80 && rect.height > 80 && rect.top > 140 && rect.left > 300) {
-                        const id = Math.round(rect.left) + '_' + Math.round(rect.top);
-                        if (seen.has(id)) continue;
-                        seen.add(id);
+                if unlike_result and unlike_result.get("success"):
+                    total_unliked += 1
+                    caption = ""
+                    try:
+                        caption = item.get("caption", {}).get("text", "")[:40] if item.get("caption") else ""
+                    except Exception:
+                        pass
+                    if (i + 1) % 5 == 0 or i == 0:
+                        log(f"  Unliked {i+1}/{len(items)} in batch (total: {total_unliked})")
+                else:
+                    error = unlike_result.get("error", "unknown") if unlike_result else "no response"
+                    log(f"  Failed to unlike item {i+1}: {error}")
 
-                        // Click the image itself
-                        img.click();
-                        count++;
-                    }
-                }
-                return count;
-            }""")
-            log(f"  Clicked {selected} thumbnails")
+                    if "429" in str(error):
+                        log("  Rate limited! Waiting 60 seconds...")
+                        time.sleep(60)
+                    elif "400" in str(error) or "403" in str(error):
+                        # Try alternate endpoint
+                        unlike_result2 = page.evaluate(f"""async () => {{
+                            try {{
+                                const resp = await fetch('https://www.instagram.com/web/likes/' + '{media_pk}' + '/unlike/', {{
+                                    method: 'POST',
+                                    headers: {{
+                                        'X-CSRFToken': '{csrf_token}',
+                                        'X-Requested-With': 'XMLHttpRequest',
+                                    }},
+                                    credentials: 'include',
+                                }});
+                                if (!resp.ok) return {{ error: resp.status }};
+                                return {{ success: true }};
+                            }} catch(e) {{
+                                return {{ error: e.message }};
+                            }}
+                        }}""")
+                        if unlike_result2 and unlike_result2.get("success"):
+                            total_unliked += 1
 
-            if selected == 0:
-                # Try alternative: click parent divs
-                selected = page.evaluate("""() => {
-                    let count = 0;
-                    const divs = document.querySelectorAll('div[role="button"]');
-                    for (const d of divs) {
-                        if (count >= 50) break;
-                        const r = d.getBoundingClientRect();
-                        if (r.width > 80 && r.height > 80 && r.top > 140 && r.left > 300) {
-                            d.click();
-                            count++;
-                        }
-                    }
-                    return count;
-                }""")
-                log(f"  Alt method: clicked {selected} divs")
+                # Delay between unlikes to avoid rate limiting
+                time.sleep(1.5)
 
-            if selected == 0:
-                log("  Could not select any items!")
-                try:
-                    page.screenshot(path=os.path.expanduser(f"~/Desktop/insta_debug_noselect{round_num}.png"))
-                except Exception:
-                    pass
-                consecutive_fails += 1
-                continue
+            log(f"Batch complete! Total unliked: {total_unliked}\n")
+            empty_rounds = 0
 
-            time.sleep(2)
-
-            # Screenshot after selection
-            try:
-                page.screenshot(path=os.path.expanduser(f"~/Desktop/insta_debug_selected{round_num}.png"))
-            except Exception:
-                pass
-
-            # Check for Unlike button
-            unlike_text = page.evaluate("""() => {
-                const all = document.querySelectorAll('button, div[role="button"], a, span');
-                const found = [];
-                for (const el of all) {
-                    const t = el.textContent.trim();
-                    if (t.toLowerCase().includes('unlike') || t.toLowerCase().includes('deselect') || t.toLowerCase().includes('remove')) {
-                        found.push(el.tagName + ': ' + t.substring(0, 30));
-                    }
-                }
-                return found.join(' | ') || 'none found';
-            }""")
-            log(f"  Unlike-related buttons: {unlike_text}")
-
-            # Click Unlike
-            unlike_result = page.evaluate("""() => {
-                const btns = document.querySelectorAll('button, div[role="button"]');
-                for (const b of btns) {
-                    if (b.textContent.trim() === 'Unlike') {
-                        b.click();
-                        return 'clicked';
-                    }
-                }
-                // Try case-insensitive
-                for (const b of btns) {
-                    if (b.textContent.trim().toLowerCase() === 'unlike') {
-                        b.click();
-                        return 'clicked (case-insensitive)';
-                    }
-                }
-                return 'not found';
-            }""")
-            log(f"  Unlike button: {unlike_result}")
-
-            if 'not found' in unlike_result:
-                try:
-                    page.screenshot(path=os.path.expanduser(f"~/Desktop/insta_debug_nounlike{round_num}.png"))
-                except Exception:
-                    pass
-                consecutive_fails += 1
-                continue
-
-            time.sleep(3)
-
-            # Confirm dialog
-            page.evaluate("""() => {
-                const btns = document.querySelectorAll('button');
-                for (const b of btns) {
-                    if (b.textContent.trim() === 'Unlike') { b.click(); return; }
-                }
-            }""")
-            time.sleep(2)
-
-            total_unliked += selected
-            consecutive_fails = 0
-            log(f"  Unliked! Total so far: {total_unliked}\n")
-            time.sleep(5)
+            if more_available and next_max_id:
+                max_id = next_max_id
+                log("Fetching next batch...")
+                time.sleep(5)
+            else:
+                log("No more liked posts to fetch!")
+                break
 
         print()
         print("=" * 50)
         if total_unliked > 0:
-            log(f"DONE! Unliked {total_unliked} items total.")
-            log("Run the script again if you have more!")
+            log(f"DONE! Successfully unliked {total_unliked} posts.")
+            log("Check your phone - the likes should be gone now!")
+            log("Run the script again if there are more to remove.")
         else:
-            log("Could not unlike items automatically.")
-            log("")
-            log("Please send me the screenshots from your Desktop:")
-            log("  (files named insta_debug_*.png)")
-            log("I'll use them to fix the script for your account.")
+            log("Could not unlike any posts.")
+            log("This might mean:")
+            log("  - Your session expired (try logging in again)")
+            log("  - Instagram blocked the requests temporarily")
+            log("  - The API endpoints have changed")
+            log("Please send me a screenshot of what Terminal shows.")
         print("=" * 50)
         print()
 
